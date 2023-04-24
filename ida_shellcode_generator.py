@@ -111,8 +111,11 @@ def saveFuncData(funcAddr):
     func_items = FuncItems(start_addr)
     for addr in func_items:
         str = idc.generate_disasm_line(addr, 0)
-        if ida_bytes.get_byte(addr) == 0xE8 and ("security_check_cookie" not in str):
-            callFuncAddr = ida_bytes.get_dword(addr + 1) + addr + 5
+        if (ida_bytes.get_byte(addr) == 0xE8 or "offset StartAddress" in str) and ("security_check_cookie" not in str):
+            if "offset StartAddress" in str:
+                callFuncAddr = ida_bytes.get_dword(addr + 1)
+            else:
+                callFuncAddr = ida_bytes.get_dword(addr + 1) + addr + 5
             saveFuncData(getDwordValue(callFuncAddr))
 
 
@@ -121,12 +124,17 @@ def fixE8CallOffset():
         func_items = FuncItems(key)
         for addr in func_items:
             str = idc.generate_disasm_line(addr, 0)
-            if ida_bytes.get_byte(addr) == 0xE8 and ("security_check_cookie" not in str):
+            if (ida_bytes.get_byte(addr) == 0xE8 or "offset StartAddress" in str) and ("security_check_cookie" not in str):
                 callFuncAddr = ida_bytes.get_dword(addr + 1) + addr + 5
+                if "offset StartAddress" in str:
+                    callFuncAddr = ida_bytes.get_dword(addr + 1)
                 callFuncAddr = getDwordValue(callFuncAddr)
 
                 if callFuncAddr in funcInfo_map:
                     e8CallOffset = funcInfo_map[callFuncAddr]["newOffset"] - (idaAddr2FileOffset(addr) + 5)
+                    if "offset StartAddress" in str:
+                        e8CallOffset = funcInfo_map[callFuncAddr]["newOffset"]
+                        relocTable.append(idaAddr2FileOffset(addr + 1))
                 else:  # 处理特殊情况:在同一个函数中跳转指令没有用jcc实现，而是用的call指令
                     func = ida_funcs.get_func(callFuncAddr)
                     fixOffset = funcInfo_map[func.start_ea]["newOffset"] + (
@@ -199,6 +207,20 @@ def saveVarData(addr, case):
                 break
         shellcodeData.extend(get_bytes(value, length))
         fileOffset += length
+    elif case == 6:#处理switch
+        switchIndex = 0
+        jmpFunc = ida_funcs.get_func(addr)
+
+        while(1):
+            jmpAddr = ida_bytes.get_dword(value + switchIndex * 4)
+            switchFunc = ida_funcs.get_func(jmpAddr)
+            if switchFunc == None or switchFunc.start_ea != jmpFunc.start_ea:
+                break
+            shellcodeData.extend(get_bytes(value + switchIndex * 4, 4))
+            patchDword(fileOffset, idaAddr2FileOffset(ida_bytes.get_dword(value + switchIndex * 4)))
+            relocTable.append(fileOffset)
+            fileOffset += 4
+            switchIndex += 1
     else:
         shellcodeData.extend(get_bytes(value, 4))
         fileOffset += 4
@@ -213,8 +235,14 @@ def copyVarToShellcode():
                 saveVarData(addr, 1)
             elif " word_" in str:
                 saveVarData(addr, 2)
-            elif str.find("dword_") != -1:
+            elif str.find("dword_") != -1:#区分大小写
                 saveVarData(addr, 4)
+            elif "samDesired" in str:
+                saveVarData(addr, 4)
+            elif "jpt_" in str:
+                saveVarData(addr, 6)
+            elif "offset StartAddress" in str:
+                continue
             elif "offset" in str:
                 if "mov     esi" in str:
                     saveVarData(addr, 5)
@@ -311,27 +339,27 @@ def generateRelocTable():
     print("--------------generateRelocTable finish!--------------")
 
 
-def outputShellcode(outType):
-    if outType == "txt":
-        fileName = 'shellcode.txt'
-        shellcodeTxt = "\""
-        f = open(fileName, 'w')
-        for index in range(fileOffset):
-            shellcodeTxt += '\\x{:02x}'.format(shellcodeData[index])
-        shellcodeTxt += "\""
-        f.write(shellcodeTxt)
-    elif outType == "raw":
-        fileName = 'shellcode.bin'
-        f = open(fileName, 'wb')
-        f.write(shellcodeData)
-
+def outputShellcode():
+    fileName = 'shellcode.txt'
+    shellcodeTxt = "\""
+    f = open(fileName, 'w')
+    for index in range(fileOffset):
+        shellcodeTxt += '\\x{:02x}'.format(shellcodeData[index])
+    shellcodeTxt += "\""
+    f.write(shellcodeTxt)
     f.close()
+
+    fileName1 = 'shellcode.bin'
+    f = open(fileName1, 'wb')
+    f.write(shellcodeData)
+    f.close()
+
     print("--------------outputShellcode finish!--------------")
-    print("shellcode outputPath: %s" % (os.getcwd() + '\\' + fileName))
+    print("shellcode outputPath: %s\n%s" % (os.getcwd() + '\\' + fileName, os.getcwd() + '\\' + fileName1))
     print("shellcode length: 0x%x" % fileOffset)
 
 
-def main(OEP, outType):
+def main(OEP):
     saveFuncData(OEP)
     print("--------------saveFuncData finish!--------------")
 
@@ -347,10 +375,10 @@ def main(OEP, outType):
 
     generateRelocTable()
 
-    outputShellcode(outType)
+    outputShellcode()
 
     return
 
 
 if __name__ == '__main__':
-    main(here(), "txt")
+    main(here())
